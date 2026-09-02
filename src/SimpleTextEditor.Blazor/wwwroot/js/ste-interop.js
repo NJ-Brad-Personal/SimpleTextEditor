@@ -261,8 +261,6 @@ export function clickElement(elementId) {
 // SEKCJA 2b: Skróty klawiaturowe WYSIWYG (contenteditable)
 // ============================================================
 
-let _shortcutsContainer = null;
-
 function _onWysiwygKeyDown(e) {
     if (!e.ctrlKey && !e.metaKey) return;
 
@@ -304,31 +302,28 @@ function _onWysiwygKeyDown(e) {
 }
 
 /**
- * Inicjalizuje skróty klawiaturowe na kontenerze contenteditable
+ * Inicjalizuje skróty klawiaturowe na kontenerze contenteditable.
+ * Stan trzymamy na elemencie (nie w module) — jedna strona może hostować
+ * wiele edytorów WYSIWYG jednocześnie, każdy z własnym kontenerem.
  */
 export function initKeyboardShortcuts(container) {
-    _shortcutsContainer = container;
+    if (!container || container._steWysiwygShortcuts) return;
+    container._steWysiwygShortcuts = _onWysiwygKeyDown;
     container.addEventListener('keydown', _onWysiwygKeyDown);
 }
 
 /**
- * Zwalnia listenery skrótów klawiaturowych
+ * Zwalnia listenery skrótów klawiaturowych z podanego kontenera.
  */
-export function disposeKeyboardShortcuts() {
-    if (_shortcutsContainer) {
-        _shortcutsContainer.removeEventListener('keydown', _onWysiwygKeyDown);
-        _shortcutsContainer = null;
-    }
+export function disposeKeyboardShortcuts(container) {
+    if (!container || !container._steWysiwygShortcuts) return;
+    container.removeEventListener('keydown', container._steWysiwygShortcuts);
+    container._steWysiwygShortcuts = null;
 }
 
 // ============================================================
 // SEKCJA 2c: Drag & drop i wklejanie obrazków
 // ============================================================
-
-let _dndState = {
-    container: null,
-    dotNetRef: null
-};
 
 function _readFileAsBase64(file) {
     return new Promise((resolve, reject) => {
@@ -343,14 +338,14 @@ function _readFileAsBase64(file) {
     });
 }
 
-async function _handleImageFiles(files) {
-    if (!_dndState.dotNetRef) return;
+async function _handleImageFiles(files, dotNetRef) {
+    if (!dotNetRef) return;
 
     for (const file of files) {
         if (!file.type.startsWith('image/')) continue;
         try {
             const base64 = await _readFileAsBase64(file);
-            await _dndState.dotNetRef.invokeMethodAsync(
+            await dotNetRef.invokeMethodAsync(
                 'OnImageDropped', file.name, base64, file.type
             );
         } catch (err) {
@@ -359,8 +354,12 @@ async function _handleImageFiles(files) {
     }
 }
 
+// Stan trzymany na elemencie (container._steDnd), nie w module — dzięki temu
+// upuszczenie/wklejenie obrazka w jednym edytorze trafia do JEGO dotNetRef,
+// a nie do ostatnio zainicjalizowanego edytora na stronie.
 function _onDrop(e) {
-    if (!_dndState.container) return;
+    const state = e.currentTarget && e.currentTarget._steDnd;
+    if (!state) return;
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
 
@@ -369,7 +368,7 @@ function _onDrop(e) {
 
     e.preventDefault();
     e.stopPropagation();
-    _handleImageFiles(files);
+    _handleImageFiles(files, state.dotNetRef);
 }
 
 function _onDragOver(e) {
@@ -380,7 +379,8 @@ function _onDragOver(e) {
 }
 
 function _onPaste(e) {
-    if (!_dndState.container) return;
+    const state = e.currentTarget && e.currentTarget._steDnd;
+    if (!state) return;
     const items = e.clipboardData?.items;
     if (!items) return;
 
@@ -394,80 +394,113 @@ function _onPaste(e) {
 
     if (imageFiles.length > 0) {
         e.preventDefault();
-        _handleImageFiles(imageFiles);
+        _handleImageFiles(imageFiles, state.dotNetRef);
     }
 }
 
 /**
- * Inicjalizuje obsługę drag & drop i wklejania obrazków
+ * Inicjalizuje obsługę drag & drop i wklejania obrazków dla podanego kontenera.
  */
 export function initImageDragDrop(container, dotNetRef) {
-    _dndState.container = container;
-    _dndState.dotNetRef = dotNetRef;
+    if (!container) return;
+    disposeImageDragDrop(container);
+    container._steDnd = { dotNetRef };
     container.addEventListener('drop', _onDrop);
     container.addEventListener('dragover', _onDragOver);
     container.addEventListener('paste', _onPaste);
 }
 
 /**
- * Zwalnia listenery drag & drop / paste
+ * Zwalnia listenery drag & drop / paste z podanego kontenera.
  */
-export function disposeImageDragDrop() {
-    if (_dndState.container) {
-        _dndState.container.removeEventListener('drop', _onDrop);
-        _dndState.container.removeEventListener('dragover', _onDragOver);
-        _dndState.container.removeEventListener('paste', _onPaste);
-        _dndState.container = null;
-        _dndState.dotNetRef = null;
-    }
+export function disposeImageDragDrop(container) {
+    if (!container || !container._steDnd) return;
+    container.removeEventListener('drop', _onDrop);
+    container.removeEventListener('dragover', _onDragOver);
+    container.removeEventListener('paste', _onPaste);
+    container._steDnd = null;
 }
 
 // ============================================================
 // SEKCJA 3: Resize obrazków (tylko drag — popup w Blazor)
 // ============================================================
 
-let _resizeState = {
-    activeImg: null,
-    overlay: null,
-    container: null,
-    dotNetRef: null,
-    handles: [],
-    isDragging: false,
-    dragHandle: null,
-    startX: 0, startY: 0,
-    startWidth: 0, startHeight: 0,
-    aspectRatio: 1
-};
+// Stan trzymany na elemencie (container._steResize), nie w jednym współdzielonym
+// obiekcie modułu — poprzednio drugi zainicjalizowany edytor nadpisywał
+// container/dotNetRef pierwszego, więc dwuklik na obrazku w edytorze A
+// wywoływał popup w komponencie B, a upuszczony/przeciągnięty rozmiar trafiał
+// do złego obwodu Blazor. Klikalny naraz może być tylko jeden obrazek na całej
+// stronie — _activeResize wskazuje, który kontener go aktualnie "posiada".
+let _activeResize = null;
+let _resizeDocListenerCount = 0;
 
-/**
- * Inicjalizuje obsługę resize obrazków
- */
-export function initImageResize(container, dotNetRef) {
-    _resizeState.container = container;
-    _resizeState.dotNetRef = dotNetRef;
+function _attachDocListeners() {
+    if (_resizeDocListenerCount === 0) {
+        document.addEventListener('click', _onOutsideClick);
+        document.addEventListener('keydown', _onKeyDown);
+    }
+    _resizeDocListenerCount++;
+}
 
-    container.addEventListener('click', _onImageClick);
-    container.addEventListener('dblclick', _onImageDblClick);
-    document.addEventListener('click', _onOutsideClick);
-    document.addEventListener('keydown', _onKeyDown);
+function _detachDocListeners() {
+    _resizeDocListenerCount = Math.max(0, _resizeDocListenerCount - 1);
+    if (_resizeDocListenerCount === 0) {
+        document.removeEventListener('click', _onOutsideClick);
+        document.removeEventListener('keydown', _onKeyDown);
+    }
 }
 
 /**
- * Zwalnia zasoby modułu resize
+ * Inicjalizuje obsługę resize obrazków dla podanego kontenera.
  */
-export function disposeImageResize() {
-    if (_resizeState.container) {
-        _resizeState.container.removeEventListener('click', _onImageClick);
-        _resizeState.container.removeEventListener('dblclick', _onImageDblClick);
+export function initImageResize(container, dotNetRef) {
+    if (!container) return;
+    disposeImageResize(container);
+
+    const state = {
+        container,
+        dotNetRef,
+        activeImg: null,
+        overlay: null,
+        handles: [],
+        isDragging: false,
+        dragHandle: null,
+        startX: 0, startY: 0,
+        startWidth: 0, startHeight: 0,
+        aspectRatio: 1,
+        onDragMove: null,
+        onDragEnd: null
+    };
+    state.onImageClick = (e) => _onImageClick(e, state);
+    state.onImageDblClick = (e) => _onImageDblClick(e, state);
+
+    container._steResize = state;
+    container.addEventListener('click', state.onImageClick);
+    container.addEventListener('dblclick', state.onImageDblClick);
+    _attachDocListeners();
+}
+
+/**
+ * Zwalnia zasoby modułu resize dla podanego kontenera.
+ */
+export function disposeImageResize(container) {
+    if (!container || !container._steResize) return;
+    const state = container._steResize;
+
+    container.removeEventListener('click', state.onImageClick);
+    container.removeEventListener('dblclick', state.onImageDblClick);
+    if (state.isDragging) {
+        document.removeEventListener('mousemove', state.onDragMove);
+        document.removeEventListener('mouseup', state.onDragEnd);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
     }
-    document.removeEventListener('click', _onOutsideClick);
-    document.removeEventListener('keydown', _onKeyDown);
-    document.removeEventListener('mousemove', _onDragMove);
-    document.removeEventListener('mouseup', _onDragEnd);
-    _removeOverlay();
-    _resizeState.container = null;
-    _resizeState.dotNetRef = null;
-    _resizeState.activeImg = null;
+    _removeOverlay(state);
+    if (_activeResize === state) {
+        _activeResize = null;
+    }
+    container._steResize = null;
+    _detachDocListeners();
 }
 
 /**
@@ -475,7 +508,7 @@ export function disposeImageResize() {
  * @returns {{ width: number, height: number, src: string } | null}
  */
 export function getSelectedImageInfo() {
-    const img = _resizeState.activeImg;
+    const img = _activeResize?.activeImg;
     if (!img) return null;
     return {
         width: img.getAttribute('width') ? parseInt(img.getAttribute('width')) : img.offsetWidth,
@@ -488,108 +521,122 @@ export function getSelectedImageInfo() {
  * Ustawia wymiary zaznaczonego obrazka (wywoływane z Blazor popupu)
  */
 export function setSelectedImageSize(width, height) {
-    const img = _resizeState.activeImg;
+    const state = _activeResize;
+    const img = state?.activeImg;
     if (!img) return;
     img.style.width = width + 'px';
     img.style.height = height + 'px';
     img.setAttribute('width', width);
     img.setAttribute('height', height);
-    _positionOverlay();
-    _updateSizeLabel();
-    _notifyChange();
+    _positionOverlay(state);
+    _updateSizeLabel(state);
+    _notifyChange(state);
 }
 
 /**
  * Odznacza aktualnie zaznaczony obrazek
  */
 export function deselectImage() {
-    _deselectImage();
+    if (_activeResize) {
+        _deselectImage(_activeResize);
+    }
 }
 
 // --- Wewnętrzne handlery ---
 
-function _onImageClick(e) {
+function _onImageClick(e, state) {
     if (e.target.tagName === 'IMG') {
         e.preventDefault();
         e.stopPropagation();
-        _selectImage(e.target);
+        _selectImage(e.target, state);
     }
 }
 
-function _onImageDblClick(e) {
+function _onImageDblClick(e, state) {
     if (e.target.tagName === 'IMG') {
         e.preventDefault();
         e.stopPropagation();
-        _selectImage(e.target);
-        // Powiadom Blazor żeby otworzył popup
-        if (_resizeState.dotNetRef) {
-            const img = _resizeState.activeImg;
+        _selectImage(e.target, state);
+        // Powiadom Blazor żeby otworzył popup — dotNetRef pochodzi z TEGO kontenera
+        if (state.dotNetRef) {
+            const img = state.activeImg;
             const w = img.getAttribute('width') ? parseInt(img.getAttribute('width')) : img.offsetWidth;
             const h = img.getAttribute('height') ? parseInt(img.getAttribute('height')) : img.offsetHeight;
-            _resizeState.dotNetRef.invokeMethodAsync('OnImageDblClick', w, h);
+            state.dotNetRef.invokeMethodAsync('OnImageDblClick', w, h);
         }
     }
 }
 
 function _onOutsideClick(e) {
-    if (!_resizeState.activeImg) return;
-    if (e.target.tagName === 'IMG' && _resizeState.container && _resizeState.container.contains(e.target)) return;
-    if (_resizeState.overlay && _resizeState.overlay.contains(e.target)) return;
+    const state = _activeResize;
+    if (!state || !state.activeImg) return;
+    if (e.target.tagName === 'IMG' && state.container && state.container.contains(e.target)) return;
+    if (state.overlay && state.overlay.contains(e.target)) return;
     // Nie odznaczaj jeśli kliknięto w popup Blazor
     if (e.target.closest('.ste-img-resize-popup')) return;
-    _deselectImage();
+    _deselectImage(state);
 }
 
 function _onKeyDown(e) {
-    if (!_resizeState.activeImg) return;
+    const state = _activeResize;
+    if (!state || !state.activeImg) return;
     if (e.key === 'Escape') {
-        _deselectImage();
-        if (_resizeState.dotNetRef) {
-            _resizeState.dotNetRef.invokeMethodAsync('OnImageDeselected');
+        _deselectImage(state);
+        if (state.dotNetRef) {
+            state.dotNetRef.invokeMethodAsync('OnImageDeselected');
         }
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {
         if (e.target.closest('.ste-img-resize-popup')) return;
-        _resizeState.activeImg.remove();
-        _deselectImage();
-        _notifyChange();
+        state.activeImg.remove();
+        _deselectImage(state);
+        _notifyChange(state);
     }
 }
 
-function _selectImage(img) {
-    if (_resizeState.activeImg === img) return;
-    _deselectImage();
-    _resizeState.activeImg = img;
+function _selectImage(img, state) {
+    if (_activeResize && _activeResize !== state) {
+        // Tylko jeden obrazek na stronie może być zaznaczony naraz.
+        _deselectImage(_activeResize);
+    }
+    if (state.activeImg === img) return;
+    _deselectImage(state);
+    state.activeImg = img;
     img.classList.add('ste-img-selected');
-    _createOverlay();
+    _activeResize = state;
+    _createOverlay(state);
 }
 
-function _deselectImage() {
-    if (_resizeState.activeImg) {
-        _resizeState.activeImg.classList.remove('ste-img-selected');
+function _deselectImage(state) {
+    if (state.activeImg) {
+        state.activeImg.classList.remove('ste-img-selected');
     }
-    _resizeState.activeImg = null;
-    _removeOverlay();
+    state.activeImg = null;
+    _removeOverlay(state);
+    if (_activeResize === state) {
+        _activeResize = null;
+    }
 }
 
-function _createOverlay() {
-    _removeOverlay();
-    const img = _resizeState.activeImg;
+function _createOverlay(state) {
+    _removeOverlay(state);
+    const img = state.activeImg;
     if (!img) return;
 
     const overlay = document.createElement('div');
     overlay.className = 'ste-img-overlay';
     // Ważne: NIE dodajemy do contenteditable (container), tylko do wrapper (parent)
     overlay.setAttribute('contenteditable', 'false');
-    _resizeState.overlay = overlay;
+    state.overlay = overlay;
+    state.handles = [];
 
     ['nw', 'ne', 'sw', 'se'].forEach(pos => {
         const handle = document.createElement('div');
         handle.className = `ste-img-handle ste-img-handle-${pos}`;
         handle.dataset.pos = pos;
-        handle.addEventListener('mousedown', _onDragStart);
+        handle.addEventListener('mousedown', (e) => _onDragStart(e, state));
         overlay.appendChild(handle);
-        _resizeState.handles.push(handle);
+        state.handles.push(handle);
     });
 
     const sizeLabel = document.createElement('div');
@@ -597,26 +644,26 @@ function _createOverlay() {
     sizeLabel.textContent = `${img.offsetWidth} × ${img.offsetHeight}`;
     sizeLabel.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (_resizeState.dotNetRef) {
+        if (state.dotNetRef) {
             const w = img.getAttribute('width') ? parseInt(img.getAttribute('width')) : img.offsetWidth;
             const h = img.getAttribute('height') ? parseInt(img.getAttribute('height')) : img.offsetHeight;
-            _resizeState.dotNetRef.invokeMethodAsync('OnImageDblClick', w, h);
+            state.dotNetRef.invokeMethodAsync('OnImageDblClick', w, h);
         }
     });
     overlay.appendChild(sizeLabel);
 
     // Append do wrappera (parent), nie do contenteditable div
-    const wrapper = _resizeState.container.parentElement;
+    const wrapper = state.container.parentElement;
     if (wrapper) {
         wrapper.appendChild(overlay);
     } else {
-        _resizeState.container.appendChild(overlay);
+        state.container.appendChild(overlay);
     }
-    _positionOverlay();
+    _positionOverlay(state);
 }
 
-function _positionOverlay() {
-    const { overlay, activeImg: img, container } = _resizeState;
+function _positionOverlay(state) {
+    const { overlay, activeImg: img, container } = state;
     if (!overlay || !img) return;
 
     // Używamy getBoundingClientRect relative do wrappera
@@ -632,16 +679,16 @@ function _positionOverlay() {
     overlay.style.zIndex = '100';
 }
 
-function _removeOverlay() {
-    if (_resizeState.overlay) {
-        _resizeState.overlay.remove();
-        _resizeState.overlay = null;
+function _removeOverlay(state) {
+    if (state.overlay) {
+        state.overlay.remove();
+        state.overlay = null;
     }
-    _resizeState.handles = [];
+    state.handles = [];
 }
 
-function _updateSizeLabel() {
-    const { overlay, activeImg: img } = _resizeState;
+function _updateSizeLabel(state) {
+    const { overlay, activeImg: img } = state;
     if (!overlay || !img) return;
     const label = overlay.querySelector('.ste-img-size-label');
     if (label) {
@@ -649,31 +696,34 @@ function _updateSizeLabel() {
     }
 }
 
-function _onDragStart(e) {
+function _onDragStart(e, state) {
     e.preventDefault();
     e.stopPropagation();
-    const img = _resizeState.activeImg;
+    const img = state.activeImg;
     if (!img) return;
 
-    _resizeState.isDragging = true;
-    _resizeState.dragHandle = e.target.dataset.pos;
-    _resizeState.startX = e.clientX;
-    _resizeState.startY = e.clientY;
-    _resizeState.startWidth = img.offsetWidth;
-    _resizeState.startHeight = img.offsetHeight;
-    _resizeState.aspectRatio = img.offsetWidth / img.offsetHeight;
+    state.isDragging = true;
+    state.dragHandle = e.target.dataset.pos;
+    state.startX = e.clientX;
+    state.startY = e.clientY;
+    state.startWidth = img.offsetWidth;
+    state.startHeight = img.offsetHeight;
+    state.aspectRatio = img.offsetWidth / img.offsetHeight;
 
-    document.addEventListener('mousemove', _onDragMove);
-    document.addEventListener('mouseup', _onDragEnd);
-    document.body.style.cursor = _getCursor(_resizeState.dragHandle);
+    state.onDragMove = (ev) => _onDragMove(ev, state);
+    state.onDragEnd = () => _onDragEnd(state);
+
+    document.addEventListener('mousemove', state.onDragMove);
+    document.addEventListener('mouseup', state.onDragEnd);
+    document.body.style.cursor = _getCursor(state.dragHandle);
     document.body.style.userSelect = 'none';
 }
 
-function _onDragMove(e) {
-    if (!_resizeState.isDragging || !_resizeState.activeImg) return;
+function _onDragMove(e, state) {
+    if (!state.isDragging || !state.activeImg) return;
     e.preventDefault();
 
-    const { startX, startY, startWidth, startHeight, aspectRatio, dragHandle, activeImg: img } = _resizeState;
+    const { startX, startY, startWidth, startHeight, aspectRatio, dragHandle, activeImg: img } = state;
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
     let w = startWidth, h = startHeight;
@@ -689,27 +739,27 @@ function _onDragMove(e) {
     img.style.height = Math.round(h) + 'px';
     img.setAttribute('width', Math.round(w));
     img.setAttribute('height', Math.round(h));
-    _positionOverlay();
-    _updateSizeLabel();
+    _positionOverlay(state);
+    _updateSizeLabel(state);
 }
 
-function _onDragEnd() {
-    if (!_resizeState.isDragging) return;
-    _resizeState.isDragging = false;
-    _resizeState.dragHandle = null;
-    document.removeEventListener('mousemove', _onDragMove);
-    document.removeEventListener('mouseup', _onDragEnd);
+function _onDragEnd(state) {
+    if (!state.isDragging) return;
+    state.isDragging = false;
+    state.dragHandle = null;
+    document.removeEventListener('mousemove', state.onDragMove);
+    document.removeEventListener('mouseup', state.onDragEnd);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    _notifyChange();
+    _notifyChange(state);
 }
 
 function _getCursor(pos) {
     return (pos === 'nw' || pos === 'se') ? 'nwse-resize' : 'nesw-resize';
 }
 
-function _notifyChange() {
-    if (_resizeState.dotNetRef) {
-        _resizeState.dotNetRef.invokeMethodAsync('OnImageResized');
+function _notifyChange(state) {
+    if (state?.dotNetRef) {
+        state.dotNetRef.invokeMethodAsync('OnImageResized');
     }
 }

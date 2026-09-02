@@ -13,6 +13,11 @@ public class SteJsInterop : IAsyncDisposable
     private IJSObjectReference? _module;
     private bool _isDisposed;
 
+    // Kontener WYSIWYG ostatnio przekazany do Init*Async — zapamiętujemy go,
+    // żeby parameterless DisposeAsync() (wymagany przez IAsyncDisposable) wiedział,
+    // który kontener posprzątać, bez konieczności przekazywania go z zewnątrz.
+    private ElementReference? _wysiwygContainer;
+
     public SteJsInterop(IJSRuntime jsRuntime)
     {
         _jsRuntime = jsRuntime;
@@ -237,20 +242,21 @@ public class SteJsInterop : IAsyncDisposable
     /// </summary>
     public async ValueTask InitKeyboardShortcutsAsync(ElementReference container)
     {
+        _wysiwygContainer = container;
         var module = await GetModuleAsync();
         await module.InvokeVoidAsync("initKeyboardShortcuts", container);
     }
 
     /// <summary>
-    /// Zwalnia listenery skrótów klawiaturowych.
+    /// Zwalnia listenery skrótów klawiaturowych z podanego kontenera.
     /// </summary>
-    public async ValueTask DisposeKeyboardShortcutsAsync()
+    public async ValueTask DisposeKeyboardShortcutsAsync(ElementReference container)
     {
         if (_module is not null)
         {
             try
             {
-                await _module.InvokeVoidAsync("disposeKeyboardShortcuts");
+                await _module.InvokeVoidAsync("disposeKeyboardShortcuts", container);
             }
             catch (JSDisconnectedException)
             {
@@ -268,20 +274,21 @@ public class SteJsInterop : IAsyncDisposable
     /// </summary>
     public async ValueTask InitImageDragDropAsync<T>(ElementReference container, DotNetObjectReference<T> dotNetRef) where T : class
     {
+        _wysiwygContainer = container;
         var module = await GetModuleAsync();
         await module.InvokeVoidAsync("initImageDragDrop", container, dotNetRef);
     }
 
     /// <summary>
-    /// Zwalnia listenery drag & drop i paste.
+    /// Zwalnia listenery drag & drop i paste z podanego kontenera.
     /// </summary>
-    public async ValueTask DisposeImageDragDropAsync()
+    public async ValueTask DisposeImageDragDropAsync(ElementReference container)
     {
         if (_module is not null)
         {
             try
             {
-                await _module.InvokeVoidAsync("disposeImageDragDrop");
+                await _module.InvokeVoidAsync("disposeImageDragDrop", container);
             }
             catch (JSDisconnectedException)
             {
@@ -299,20 +306,21 @@ public class SteJsInterop : IAsyncDisposable
     /// </summary>
     public async ValueTask InitImageResizeAsync<T>(ElementReference container, DotNetObjectReference<T> dotNetRef) where T : class
     {
+        _wysiwygContainer = container;
         var module = await GetModuleAsync();
         await module.InvokeVoidAsync("initImageResize", container, dotNetRef);
     }
 
     /// <summary>
-    /// Zwalnia zasoby modułu resize obrazków.
+    /// Zwalnia zasoby modułu resize obrazków dla podanego kontenera.
     /// </summary>
-    public async ValueTask DisposeImageResizeAsync()
+    public async ValueTask DisposeImageResizeAsync(ElementReference container)
     {
         if (_module is not null)
         {
             try
             {
-                await _module.InvokeVoidAsync("disposeImageResize");
+                await _module.InvokeVoidAsync("disposeImageResize", container);
             }
             catch (JSDisconnectedException)
             {
@@ -348,9 +356,12 @@ public class SteJsInterop : IAsyncDisposable
         if (_isDisposed) return;
         _isDisposed = true;
 
-        await DisposeKeyboardShortcutsAsync();
-        await DisposeImageDragDropAsync();
-        await DisposeImageResizeAsync();
+        if (_wysiwygContainer is { } container)
+        {
+            await DisposeKeyboardShortcutsAsync(container);
+            await DisposeImageDragDropAsync(container);
+            await DisposeImageResizeAsync(container);
+        }
 
         if (_module is not null)
         {

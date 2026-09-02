@@ -512,9 +512,9 @@ public partial class RadzenMarkdownEditor : ComponentBase, IAsyncDisposable
                     await _jsInterop.SetHtmlAsync(_wysiwygRef, html);
                     
                     // Reinicjalizacja modułów JS
-                    await _jsInterop.DisposeImageResizeAsync();
-                    await _jsInterop.DisposeKeyboardShortcutsAsync();
-                    await _jsInterop.DisposeImageDragDropAsync();
+                    await _jsInterop.DisposeImageResizeAsync(_wysiwygRef);
+                    await _jsInterop.DisposeKeyboardShortcutsAsync(_wysiwygRef);
+                    await _jsInterop.DisposeImageDragDropAsync(_wysiwygRef);
                     await InitImageResize();
                     await _jsInterop.InitKeyboardShortcutsAsync(_wysiwygRef);
                     await _jsInterop.InitImageDragDropAsync(_wysiwygRef, _dotNetRef!);
@@ -526,9 +526,9 @@ public partial class RadzenMarkdownEditor : ComponentBase, IAsyncDisposable
                 _showResizePopup = false;
                 if (_jsInterop != null)
                 {
-                    await _jsInterop.DisposeImageResizeAsync();
-                    await _jsInterop.DisposeKeyboardShortcutsAsync();
-                    await _jsInterop.DisposeImageDragDropAsync();
+                    await _jsInterop.DisposeImageResizeAsync(_wysiwygRef);
+                    await _jsInterop.DisposeKeyboardShortcutsAsync(_wysiwygRef);
+                    await _jsInterop.DisposeImageDragDropAsync(_wysiwygRef);
                     var html = await _jsInterop.GetHtmlAsync(_wysiwygRef);
                     _internalValue = HtmlToMarkdownConverterInstance.Convert(html);
                     await NotifyValueChanged();
