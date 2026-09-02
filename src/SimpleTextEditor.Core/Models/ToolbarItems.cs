@@ -216,7 +216,12 @@ public static class ToolbarItems
     /// <summary>
     /// Pobiera domyślne elementy paska narzędzi.
     /// </summary>
-    public static IReadOnlyList<ToolbarItem> Default => new[]
+    public static IReadOnlyList<ToolbarItem> Default => DefaultItems;
+
+    // Cache'owane: elementy są tylko odczytywane, a wcześniej każdy dostęp do Default
+    // alokował komplet nowych obiektów — przy każdym renderze edytora, z nową
+    // referencją tablicy, co wymuszało również ponowny render całego paska narzędzi.
+    private static readonly IReadOnlyList<ToolbarItem> DefaultItems = new[]
     {
         SwitchMode,
         Separator,

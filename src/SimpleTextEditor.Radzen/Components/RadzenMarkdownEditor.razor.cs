@@ -2,6 +2,7 @@ namespace SimpleTextEditor.Radzen.Components;
 
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.JSInterop;
 using SimpleTextEditor.Blazor.Components;
 using SimpleTextEditor.Blazor.Services;
@@ -22,7 +23,14 @@ public partial class RadzenMarkdownEditor : ComponentBase, IAsyncDisposable
     /// </summary>
     [Inject]
     private IJSRuntime JSRuntime { get; set; } = default!;
-    
+
+    /// <summary>
+    /// Dostawca usług — używany do pobrania domyślnych implementacji zarejestrowanych
+    /// przez AddRadzenMarkdownEditor, gdy nie podano ich przez parametry.
+    /// </summary>
+    [Inject]
+    private IServiceProvider Services { get; set; } = default!;
+
     private ElementReference _textareaRef;
     private ElementReference _wysiwygRef;
     private InputFile? _imageInputRef;
@@ -151,14 +159,91 @@ public partial class RadzenMarkdownEditor : ComponentBase, IAsyncDisposable
     [Parameter]
     public IHtmlToMarkdownConverter? HtmlToMarkdownConverter { get; set; }
     
-    // Rozwiązane instancje z wartościami domyślnymi
-    private IImageUploadHandler ImageUploadHandlerInstance => ImageUploadHandler ?? new Base64ImageUploadHandler();
-    private IIconProvider IconProviderInstance => IconProvider ?? new MaterialIconProvider();
-    private ILocalizationProvider LocalizationProviderInstance => LocalizationProvider ?? new DefaultLocalizationProvider();
-    private IMarkdownParser MarkdownParserInstance => MarkdownParser ?? new MarkdownService();
-    private IEditorTheme ThemeInstance => EditorTheme ?? (Theme == "dark" ? new DarkTheme() : new LightTheme());
-    private IReadOnlyList<ToolbarItem> ToolbarItemsList => ToolbarItems ?? Core.Models.ToolbarItems.Default;
-    private IHtmlToMarkdownConverter HtmlToMarkdownConverterInstance => HtmlToMarkdownConverter ?? new HtmlToMarkdownConverter();
+    // Rozwiązane instancje — wyliczane raz (i ponownie tylko gdy zmieni się parametr źródłowy).
+    // Wcześniej każdy odczyt tworzył nową instancję; ponieważ są przekazywane jako parametry
+    // do paska narzędzi, nowa referencja przy każdym renderze wymuszała jego pełny re-render.
+    private IImageUploadHandler _imageUploadHandlerInstance = default!;
+    private IIconProvider _iconProviderInstance = default!;
+    private ILocalizationProvider _localizationProviderInstance = default!;
+    private IMarkdownParser _markdownParserInstance = default!;
+    private IEditorTheme _themeInstance = default!;
+    private IReadOnlyList<ToolbarItem> _toolbarItemsList = default!;
+    private IHtmlToMarkdownConverter _htmlToMarkdownConverterInstance = default!;
+
+    // Ostatnio widziane wartości parametrów źródłowych — do wykrycia zmiany.
+    private IImageUploadHandler? _lastImageUploadHandler;
+    private IIconProvider? _lastIconProvider;
+    private ILocalizationProvider? _lastLocalizationProvider;
+    private IMarkdownParser? _lastMarkdownParser;
+    private IEditorTheme? _lastEditorTheme;
+    private string? _lastTheme;
+    private IReadOnlyList<ToolbarItem>? _lastToolbarItems;
+    private IHtmlToMarkdownConverter? _lastHtmlToMarkdownConverter;
+
+    private IImageUploadHandler ImageUploadHandlerInstance => _imageUploadHandlerInstance;
+    private IIconProvider IconProviderInstance => _iconProviderInstance;
+    private ILocalizationProvider LocalizationProviderInstance => _localizationProviderInstance;
+    private IMarkdownParser MarkdownParserInstance => _markdownParserInstance;
+    private IEditorTheme ThemeInstance => _themeInstance;
+    private IReadOnlyList<ToolbarItem> ToolbarItemsList => _toolbarItemsList;
+    private IHtmlToMarkdownConverter HtmlToMarkdownConverterInstance => _htmlToMarkdownConverterInstance;
+
+    private void ResolveInstances()
+    {
+        if (_imageUploadHandlerInstance is null || !ReferenceEquals(ImageUploadHandler, _lastImageUploadHandler))
+        {
+            _lastImageUploadHandler = ImageUploadHandler;
+            _imageUploadHandlerInstance = ImageUploadHandler
+                ?? Services.GetService<IImageUploadHandler>()
+                ?? new Base64ImageUploadHandler();
+        }
+
+        if (_iconProviderInstance is null || !ReferenceEquals(IconProvider, _lastIconProvider))
+        {
+            _lastIconProvider = IconProvider;
+            _iconProviderInstance = IconProvider
+                ?? Services.GetService<IIconProvider>()
+                ?? new MaterialIconProvider();
+        }
+
+        if (_localizationProviderInstance is null || !ReferenceEquals(LocalizationProvider, _lastLocalizationProvider))
+        {
+            _lastLocalizationProvider = LocalizationProvider;
+            _localizationProviderInstance = LocalizationProvider
+                ?? Services.GetService<ILocalizationProvider>()
+                ?? new DefaultLocalizationProvider();
+        }
+
+        if (_markdownParserInstance is null || !ReferenceEquals(MarkdownParser, _lastMarkdownParser))
+        {
+            _lastMarkdownParser = MarkdownParser;
+            _markdownParserInstance = MarkdownParser
+                ?? Services.GetService<IMarkdownParser>()
+                ?? new MarkdownService();
+            _previewHtmlSource = null;
+        }
+
+        if (_themeInstance is null || !ReferenceEquals(EditorTheme, _lastEditorTheme) || Theme != _lastTheme)
+        {
+            _lastEditorTheme = EditorTheme;
+            _lastTheme = Theme;
+            _themeInstance = EditorTheme ?? (Theme == "dark" ? new DarkTheme() : new LightTheme());
+        }
+
+        if (_toolbarItemsList is null || !ReferenceEquals(ToolbarItems, _lastToolbarItems))
+        {
+            _lastToolbarItems = ToolbarItems;
+            _toolbarItemsList = ToolbarItems ?? Core.Models.ToolbarItems.Default;
+        }
+
+        if (_htmlToMarkdownConverterInstance is null || !ReferenceEquals(HtmlToMarkdownConverter, _lastHtmlToMarkdownConverter))
+        {
+            _lastHtmlToMarkdownConverter = HtmlToMarkdownConverter;
+            _htmlToMarkdownConverterInstance = HtmlToMarkdownConverter
+                ?? Services.GetService<IHtmlToMarkdownConverter>()
+                ?? new HtmlToMarkdownConverter();
+        }
+    }
     
     private EditorMode CurrentMode => _currentMode;
     
@@ -179,7 +264,23 @@ public partial class RadzenMarkdownEditor : ComponentBase, IAsyncDisposable
         }
     }
     
-    private string PreviewHtml => MarkdownParserInstance.ToHtml(_internalValue);
+    // Podgląd jest wyliczany tylko gdy zmieni się treść. Wcześniej pełne parsowanie
+    // Markdown + sanitizacja HTML odbywały się przy każdym renderze komponentu.
+    private string? _previewHtmlSource;
+    private string _previewHtmlCache = string.Empty;
+
+    private string PreviewHtml
+    {
+        get
+        {
+            if (_previewHtmlSource != _internalValue)
+            {
+                _previewHtmlCache = MarkdownParserInstance.ToHtml(_internalValue);
+                _previewHtmlSource = _internalValue;
+            }
+            return _previewHtmlCache;
+        }
+    }
     private string EffectivePlaceholder => Placeholder ?? LocalizationProviderInstance.Get("placeholder");
     private string ContainerClass => $"ste-radzen-container {ThemeInstance.ContainerClass} {CssClass} {(_isFullscreen ? "ste-fullscreen" : "")}".Trim();
     private string LayoutClass => CurrentMode == EditorMode.Markdown 
@@ -219,6 +320,7 @@ public partial class RadzenMarkdownEditor : ComponentBase, IAsyncDisposable
         _internalValue = Value;
         _currentMode = Mode;
         _jsInterop = new SteJsInterop(JSRuntime);
+        ResolveInstances();
     }
     
     /// <inheritdoc />
@@ -319,6 +421,8 @@ public partial class RadzenMarkdownEditor : ComponentBase, IAsyncDisposable
         {
             _internalValue = Value;
         }
+
+        ResolveInstances();
     }
     
     private async Task NotifyValueChanged()

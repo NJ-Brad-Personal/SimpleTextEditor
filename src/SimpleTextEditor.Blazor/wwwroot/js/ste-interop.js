@@ -71,6 +71,46 @@ export function getCurrentLine(textarea) {
 }
 
 /**
+ * Skróty Ctrl+B / Ctrl+I dla trybu Markdown.
+ * Obsługiwane w całości po stronie przeglądarki — dzięki temu nawigacja kursorem
+ * (strzałki, Home, End, PageUp/Down) nie generuje żadnego ruchu do serwera.
+ * insertText emituje zdarzenie 'input', więc wiązanie @bind w Blazor dostaje nową wartość.
+ */
+function _onMarkdownKeyDown(e) {
+    if (!e.ctrlKey && !e.metaKey) return;
+
+    let before, after;
+    switch (e.key.toLowerCase()) {
+        case 'b': before = '**'; after = '**'; break;
+        case 'i': before = '*'; after = '*'; break;
+        default: return;
+    }
+
+    e.preventDefault();
+    insertText(e.currentTarget, before, after, false);
+}
+
+/**
+ * Podłącza skróty Markdown do konkretnej textarea.
+ * Stan trzymamy na elemencie, nie w module — dzięki temu wiele edytorów
+ * na jednej stronie nie nadpisuje sobie nawzajem listenerów.
+ */
+export function initMarkdownShortcuts(textarea) {
+    if (!textarea || textarea._steMarkdownShortcuts) return;
+    textarea._steMarkdownShortcuts = _onMarkdownKeyDown;
+    textarea.addEventListener('keydown', _onMarkdownKeyDown);
+}
+
+/**
+ * Odłącza skróty Markdown od textarea
+ */
+export function disposeMarkdownShortcuts(textarea) {
+    if (!textarea || !textarea._steMarkdownShortcuts) return;
+    textarea.removeEventListener('keydown', textarea._steMarkdownShortcuts);
+    textarea._steMarkdownShortcuts = null;
+}
+
+/**
  * Synchronizuje scroll edytora z podglądem
  */
 export function syncScroll(editor, preview) {

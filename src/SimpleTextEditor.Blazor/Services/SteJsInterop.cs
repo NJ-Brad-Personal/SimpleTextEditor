@@ -51,6 +51,33 @@ public class SteJsInterop : IAsyncDisposable
     }
 
     /// <summary>
+    /// Podłącza skróty Ctrl+B / Ctrl+I do textarea (obsługa po stronie przeglądarki).
+    /// </summary>
+    public async ValueTask InitMarkdownShortcutsAsync(ElementReference textarea)
+    {
+        var module = await GetModuleAsync();
+        await module.InvokeVoidAsync("initMarkdownShortcuts", textarea);
+    }
+
+    /// <summary>
+    /// Odłącza skróty Markdown od textarea.
+    /// </summary>
+    public async ValueTask DisposeMarkdownShortcutsAsync(ElementReference textarea)
+    {
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.InvokeVoidAsync("disposeMarkdownShortcuts", textarea);
+            }
+            catch (JSDisconnectedException)
+            {
+                // Obwód już rozłączony
+            }
+        }
+    }
+
+    /// <summary>
     /// Synchronizuje scroll edytora z podglądem.
     /// </summary>
     public async ValueTask SyncScrollAsync(ElementReference editor, ElementReference preview)

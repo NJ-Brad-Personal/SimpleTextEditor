@@ -1,7 +1,7 @@
 namespace SimpleTextEditor.Blazor.Components;
 
 using Microsoft.AspNetCore.Components;
-using Microsoft.AspNetCore.Components.Web;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.JSInterop;
 using SimpleTextEditor.Blazor.Services;
 using SimpleTextEditor.Core.Abstractions;
@@ -21,7 +21,14 @@ public partial class EditorBase : ComponentBase, IAsyncDisposable
     /// </summary>
     [Inject]
     private IJSRuntime JSRuntime { get; set; } = default!;
-    
+
+    /// <summary>
+    /// Dostawca usług — używany do pobrania domyślnych implementacji zarejestrowanych
+    /// przez AddSimpleTextEditor, gdy nie podano ich przez parametry.
+    /// </summary>
+    [Inject]
+    private IServiceProvider Services { get; set; } = default!;
+
     private ElementReference _containerRef;
     private ElementReference _textareaRef;
     private SteJsInterop? _jsInterop;
@@ -119,12 +126,69 @@ public partial class EditorBase : ComponentBase, IAsyncDisposable
     [Parameter]
     public EventCallback<string> OnChange { get; set; }
     
-    // Rozwiązane instancje z wartościami domyślnymi
-    private IIconProvider IconProviderInstance => IconProvider ?? new MaterialIconProvider();
-    private ILocalizationProvider LocalizationProviderInstance => LocalizationProvider ?? new DefaultLocalizationProvider();
-    private IMarkdownParser MarkdownParserInstance => MarkdownParser ?? new MarkdownService();
-    private IEditorTheme ThemeInstance => EditorTheme ?? (Theme == "dark" ? new DarkTheme() : new LightTheme());
-    private IReadOnlyList<ToolbarItem> ToolbarItemsList => ToolbarItems ?? Core.Models.ToolbarItems.Default;
+    // Rozwiązane instancje — wyliczane raz (i ponownie tylko gdy zmieni się parametr źródłowy).
+    // Wcześniej każdy odczyt tworzył nową instancję; ponieważ są przekazywane jako parametry
+    // do paska narzędzi, nowa referencja przy każdym renderze wymuszała jego pełny re-render.
+    private IIconProvider _iconProviderInstance = default!;
+    private ILocalizationProvider _localizationProviderInstance = default!;
+    private IMarkdownParser _markdownParserInstance = default!;
+    private IEditorTheme _themeInstance = default!;
+    private IReadOnlyList<ToolbarItem> _toolbarItemsList = default!;
+
+    // Ostatnio widziane wartości parametrów źródłowych — do wykrycia zmiany.
+    private IIconProvider? _lastIconProvider;
+    private ILocalizationProvider? _lastLocalizationProvider;
+    private IMarkdownParser? _lastMarkdownParser;
+    private IEditorTheme? _lastEditorTheme;
+    private string? _lastTheme;
+    private IReadOnlyList<ToolbarItem>? _lastToolbarItems;
+
+    private IIconProvider IconProviderInstance => _iconProviderInstance;
+    private ILocalizationProvider LocalizationProviderInstance => _localizationProviderInstance;
+    private IMarkdownParser MarkdownParserInstance => _markdownParserInstance;
+    private IEditorTheme ThemeInstance => _themeInstance;
+    private IReadOnlyList<ToolbarItem> ToolbarItemsList => _toolbarItemsList;
+
+    private void ResolveInstances()
+    {
+        if (_iconProviderInstance is null || !ReferenceEquals(IconProvider, _lastIconProvider))
+        {
+            _lastIconProvider = IconProvider;
+            _iconProviderInstance = IconProvider
+                ?? Services.GetService<IIconProvider>()
+                ?? new MaterialIconProvider();
+        }
+
+        if (_localizationProviderInstance is null || !ReferenceEquals(LocalizationProvider, _lastLocalizationProvider))
+        {
+            _lastLocalizationProvider = LocalizationProvider;
+            _localizationProviderInstance = LocalizationProvider
+                ?? Services.GetService<ILocalizationProvider>()
+                ?? new DefaultLocalizationProvider();
+        }
+
+        if (_markdownParserInstance is null || !ReferenceEquals(MarkdownParser, _lastMarkdownParser))
+        {
+            _lastMarkdownParser = MarkdownParser;
+            _markdownParserInstance = MarkdownParser
+                ?? Services.GetService<IMarkdownParser>()
+                ?? new MarkdownService();
+            _previewHtmlSource = null;
+        }
+
+        if (_themeInstance is null || !ReferenceEquals(EditorTheme, _lastEditorTheme) || Theme != _lastTheme)
+        {
+            _lastEditorTheme = EditorTheme;
+            _lastTheme = Theme;
+            _themeInstance = EditorTheme ?? (Theme == "dark" ? new DarkTheme() : new LightTheme());
+        }
+
+        if (_toolbarItemsList is null || !ReferenceEquals(ToolbarItems, _lastToolbarItems))
+        {
+            _lastToolbarItems = ToolbarItems;
+            _toolbarItemsList = ToolbarItems ?? Core.Models.ToolbarItems.Default;
+        }
+    }
     
     private PreviewMode CurrentPreviewMode => PreviewMode;
     
@@ -147,7 +211,23 @@ public partial class EditorBase : ComponentBase, IAsyncDisposable
         }
     }
     
-    private string PreviewHtml => MarkdownParserInstance.ToHtml(_internalValue);
+    // Podgląd jest wyliczany tylko gdy zmieni się treść. Wcześniej pełne parsowanie
+    // Markdown + sanitizacja HTML odbywały się przy każdym renderze komponentu.
+    private string? _previewHtmlSource;
+    private string _previewHtmlCache = string.Empty;
+
+    private string PreviewHtml
+    {
+        get
+        {
+            if (_previewHtmlSource != _internalValue)
+            {
+                _previewHtmlCache = MarkdownParserInstance.ToHtml(_internalValue);
+                _previewHtmlSource = _internalValue;
+            }
+            return _previewHtmlCache;
+        }
+    }
     private string EffectivePlaceholder => Placeholder ?? LocalizationProviderInstance.Get("placeholder");
     private string ContainerClass => $"{ThemeInstance.ContainerClass} {CssClass} {(_isFullscreen ? "ste-fullscreen" : "")}".Trim();
     private string LayoutClass => CurrentPreviewMode switch
@@ -162,6 +242,7 @@ public partial class EditorBase : ComponentBase, IAsyncDisposable
     {
         _internalValue = Value;
         _jsInterop = new SteJsInterop(JSRuntime);
+        ResolveInstances();
     }
     
     /// <inheritdoc />
@@ -170,6 +251,21 @@ public partial class EditorBase : ComponentBase, IAsyncDisposable
         if (Value != _internalValue)
         {
             _internalValue = Value;
+        }
+
+        ResolveInstances();
+    }
+
+    /// <inheritdoc />
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && _jsInterop != null)
+        {
+            // Skróty Ctrl+B / Ctrl+I obsługujemy w JS. Wcześniej textarea miała
+            // @onkeydown, przez co każde naciśnięcie klawisza — także strzałki, Home,
+            // End czy PageUp/Down — wysyłało zdarzenie na serwer i wymuszało
+            // ponowny render całego edytora tylko po to, by je zignorować.
+            await _jsInterop.InitMarkdownShortcutsAsync(_textareaRef);
         }
     }
     
@@ -234,30 +330,20 @@ public partial class EditorBase : ComponentBase, IAsyncDisposable
         };
     }
     
-    private async Task HandleKeyDown(KeyboardEventArgs e)
-    {
-        // Obsługa skrótów klawiaturowych
-        if (e.CtrlKey)
-        {
-            var item = e.Key.ToLower() switch
-            {
-                "b" => Core.Models.ToolbarItems.Bold,
-                "i" => Core.Models.ToolbarItems.Italic,
-                _ => null
-            };
-            
-            if (item != null)
-            {
-                await InsertMarkdown(item);
-            }
-        }
-    }
-    
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
         if (_jsInterop != null)
         {
+            try
+            {
+                await _jsInterop.DisposeMarkdownShortcutsAsync(_textareaRef);
+            }
+            catch (JSDisconnectedException)
+            {
+                // Obwód już rozłączony
+            }
+
             await _jsInterop.DisposeAsync();
         }
     }

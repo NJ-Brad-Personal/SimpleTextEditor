@@ -29,8 +29,7 @@
                       readonly="@ReadOnly"
                       style="min-height: @(MinHeight)px; @(MaxHeight > 0 ? $"max-height: {MaxHeight}px;" : "")"
                       @bind="InternalValue"
-                      @bind:event="oninput"
-                      @onkeydown="HandleKeyDown" />
+                      @bind:event="oninput" />
         </div>
         
         @* Preview *@

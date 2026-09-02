@@ -8,11 +8,15 @@ namespace SimpleTextEditor.Core.Services;
 /// </summary>
 public class MarkdownService : IMarkdownParser
 {
-    private readonly MarkdownPipeline _pipeline;
-    
-    public MarkdownService()
+    // Pipeline jest niezmienny i bezpieczny wątkowo — budujemy go raz dla całego procesu.
+    // Budowanie pipeline'u to ~0,1 ms; wcześniej odbywało się przy każdym renderze komponentu.
+    private static readonly MarkdownPipeline SharedPipeline = BuildPipeline();
+
+    private readonly MarkdownPipeline _pipeline = SharedPipeline;
+
+    private static MarkdownPipeline BuildPipeline()
     {
-        _pipeline = new MarkdownPipelineBuilder()
+        return new MarkdownPipelineBuilder()
             .UseAdvancedExtensions()
             .UseEmojiAndSmiley()
             .UseAutoLinks()
