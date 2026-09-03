@@ -20,12 +20,24 @@ public class Base64ImageUploadHandlerTests
     [Fact]
     public async Task UploadAsync_ReturnsCorrectBase64()
     {
-        var content = new byte[] { 1, 2, 3, 4 };
+        var content = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 }; // JPEG header (SOI + APP0)
         var expectedBase64 = Convert.ToBase64String(content);
-        
+
         var result = await _sut.UploadAsync("file.jpg", content, "image/jpeg");
-        
+
         Assert.Equal($"data:image/jpeg;base64,{expectedBase64}", result);
+    }
+
+    [Fact]
+    public async Task UploadAsync_ContentDoesNotMatchDeclaredType_Throws()
+    {
+        // Bytes don't match any known image signature for "image/png" (magic-byte validation
+        // inherited from ImageUploadHandlerBase). The user must fix the file before uploading —
+        // the handler no longer silently trusts the declared content type.
+        var content = new byte[] { 1, 2, 3, 4 };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.UploadAsync("file.png", content, "image/png"));
     }
 
     [Fact]
