@@ -25,6 +25,11 @@ public class MarkdownService : IMarkdownParser
             .UseGridTables()
             .UseFootnotes()
             .UseAutoIdentifiers()
+            // Without this, CommonMark treats a single newline as a space, so notes written
+            // one line per item (no blank line between them) collapse into one run-on
+            // paragraph instead of rendering each line on its own — surprising for a
+            // notepad-style editor where every Enter is expected to start a new line.
+            .UseSoftlineBreakAsHardlineBreak()
             .DisableHtml()
             .Build();
     }

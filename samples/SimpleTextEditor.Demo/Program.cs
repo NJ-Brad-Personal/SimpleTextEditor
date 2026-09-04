@@ -1,6 +1,6 @@
+using Radzen;
 using SimpleTextEditor.Demo.Components;
 using SimpleTextEditor.Radzen.Extensions;
-using Radzen;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,8 +25,8 @@ builder.Services.AddRadzenComponents();
 // Add SimpleTextEditor
 builder.Services.AddRadzenMarkdownEditor(options =>
 {
-    options.Language = "pl";
-    options.Theme = "light";
+    options.Language = "en";
+    options.Theme = "dark";
 });
 
 var app = builder.Build();
